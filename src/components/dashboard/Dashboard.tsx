@@ -6,10 +6,14 @@ import { RpmGauge } from './RpmGauge';
 import { GearWarningAlert } from './GearWarningAlert';
 import { FuelGauge } from './FuelGauge';
 import { SpeedDisplay } from './SpeedDisplay';
-import { Gauge, Fuel, Droplets, Activity } from 'lucide-react';
+import { ConnectionStatus } from './ConnectionStatus';
+import { Fuel, Droplets, Activity } from 'lucide-react';
+
+// Update this to your Raspberry Pi's IP address and port
+const WS_URL = 'ws://localhost:8765';
 
 export function Dashboard() {
-  const { data, gearWarning, efficiencyStatus, thresholds } = useVehicleData();
+  const { data, gearWarning, efficiencyStatus, thresholds, isConnected, connectionError, connect } = useVehicleData(WS_URL);
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6 lg:p-8">
@@ -89,10 +93,11 @@ export function Dashboard() {
 
       {/* Footer status */}
       <footer className="mt-6 md:mt-8 flex items-center justify-between text-xs text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <Activity className="w-4 h-4 text-status-optimal animate-pulse" />
-          <span>System Active</span>
-        </div>
+        <ConnectionStatus 
+          isConnected={isConnected} 
+          error={connectionError} 
+          onReconnect={connect} 
+        />
         <span>Last update: {new Date(data.timestamp).toLocaleTimeString()}</span>
       </footer>
     </div>
