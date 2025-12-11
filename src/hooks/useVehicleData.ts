@@ -17,16 +17,22 @@ const RPM_THRESHOLDS = {
   shiftDown: 1200,
 };
 
-export function useVehicleData() {
+// Default WebSocket URL - update this to your Pi's IP address
+const DEFAULT_WS_URL = 'ws://localhost:8765';
+
+export function useVehicleData(wsUrl: string = DEFAULT_WS_URL) {
   const [data, setData] = useState<VehicleData>({
-    fuelIn: 45.5,
-    fuelOut: 2.3,
-    gear: 3,
-    rpm: 2500,
-    speed: 65,
-    mileage: 14.2,
+    fuelIn: 0,
+    fuelOut: 0,
+    gear: 0,
+    rpm: 0,
+    speed: 0,
+    mileage: 0,
     timestamp: Date.now(),
   });
+
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const [gearWarning, setGearWarning] = useState<GearWarning>({
     active: false,
@@ -36,8 +42,10 @@ export function useVehicleData() {
     duration: 0,
   });
 
+  const wsRef = useRef<WebSocket | null>(null);
   const gearStartTime = useRef<number>(Date.now());
   const lastGear = useRef<number>(data.gear);
+  const reconnectTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // Calculate efficiency status based on mileage
   const getEfficiencyStatus = useCallback((mileage: number): EfficiencyStatus => {
@@ -98,55 +106,102 @@ export function useVehicleData() {
     setGearWarning({ active: false, message: '', currentGear: gear, suggestedGear: gear, duration: gearDuration });
   }, []);
 
-  // Simulate real-time data updates (replace with actual WebSocket/API connection)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setData(prev => {
-        // Track gear changes
-        if (prev.gear !== lastGear.current) {
-          gearStartTime.current = Date.now();
-          lastGear.current = prev.gear;
-        }
+  // Process incoming vehicle data
+  const processData = useCallback((newData: VehicleData) => {
+    // Track gear changes
+    if (newData.gear !== lastGear.current) {
+      gearStartTime.current = Date.now();
+      lastGear.current = newData.gear;
+    }
 
-        const gearDuration = (Date.now() - gearStartTime.current) / 1000;
+    const gearDuration = (Date.now() - gearStartTime.current) / 1000;
 
-        // Simulate realistic fluctuations
-        const newData: VehicleData = {
-          fuelIn: Math.max(0, prev.fuelIn - Math.random() * 0.01),
-          fuelOut: prev.fuelOut + Math.random() * 0.005,
-          gear: prev.gear,
-          rpm: Math.max(800, Math.min(6500, prev.rpm + (Math.random() - 0.5) * 200)),
-          speed: Math.max(0, Math.min(180, prev.speed + (Math.random() - 0.5) * 5)),
-          mileage: Math.max(5, Math.min(25, prev.mileage + (Math.random() - 0.5) * 0.5)),
-          timestamp: Date.now(),
-        };
+    // Update data with timestamp
+    const dataWithTimestamp = {
+      ...newData,
+      timestamp: Date.now(),
+    };
 
-        // Check gear warnings
-        checkGearWarning(newData, gearDuration);
-
-        return newData;
-      });
-    }, 500); // Update every 500ms
-
-    return () => clearInterval(interval);
+    setData(dataWithTimestamp);
+    checkGearWarning(dataWithTimestamp, gearDuration);
   }, [checkGearWarning]);
 
-  // Function to connect to actual backend (for future use)
-  const connectToBackend = useCallback((wsUrl: string) => {
-    // TODO: Implement WebSocket connection to Python backend
-    // const ws = new WebSocket(wsUrl);
-    // ws.onmessage = (event) => {
-    //   const newData = JSON.parse(event.data);
-    //   setData(newData);
-    // };
-    console.log('Connect to backend:', wsUrl);
+  // Connect to WebSocket
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    try {
+      console.log(`Connecting to WebSocket at ${wsUrl}...`);
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+        setIsConnected(true);
+        setConnectionError(null);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const newData = JSON.parse(event.data) as VehicleData;
+          processData(newData);
+        } catch (err) {
+          console.error('Error parsing WebSocket message:', err);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setConnectionError('Connection error');
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        setIsConnected(false);
+        wsRef.current = null;
+
+        // Auto-reconnect after 3 seconds
+        reconnectTimeout.current = setTimeout(() => {
+          console.log('Attempting to reconnect...');
+          connect();
+        }, 3000);
+      };
+
+      wsRef.current = ws;
+    } catch (error) {
+      console.error('Failed to connect:', error);
+      setConnectionError('Failed to connect');
+    }
+  }, [wsUrl, processData]);
+
+  // Disconnect from WebSocket
+  const disconnect = useCallback(() => {
+    if (reconnectTimeout.current) {
+      clearTimeout(reconnectTimeout.current);
+      reconnectTimeout.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setIsConnected(false);
   }, []);
+
+  // Connect on mount
+  useEffect(() => {
+    connect();
+    return () => disconnect();
+  }, [connect, disconnect]);
 
   return {
     data,
     gearWarning,
     efficiencyStatus: getEfficiencyStatus(data.mileage),
-    connectToBackend,
+    isConnected,
+    connectionError,
+    connect,
+    disconnect,
     thresholds: MILEAGE_THRESHOLDS,
   };
 }
